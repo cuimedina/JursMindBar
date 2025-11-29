@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { Subject, MBELogEntry, MBEQuestionAnalysis } from '../types';
 import { MOCK_MBE_LOGS } from '../services/mockData';
@@ -89,8 +88,9 @@ export const MBEPractice: React.FC = () => {
   };
 
   const handleDeleteLog = (id: string) => {
+    // Use a custom confirmation approach or ensure window.confirm is handled correctly in the event loop
     if (window.confirm('Are you sure you want to delete this session log?')) {
-      setLogs(prev => prev.filter(l => l.id !== id));
+      setLogs(prevLogs => prevLogs.filter(l => l.id !== id));
     }
   };
 
@@ -181,7 +181,7 @@ export const MBEPractice: React.FC = () => {
 
   const handleDeleteAnalysis = (id: string) => {
     if (window.confirm('Delete this analysis?')) {
-      setAnalyzedQuestions(analyzedQuestions.filter(q => q.id !== id));
+      setAnalyzedQuestions(prev => prev.filter(q => q.id !== id));
     }
   };
 
@@ -433,10 +433,13 @@ export const MBEPractice: React.FC = () => {
                               <button 
                                 type="button"
                                 onClick={(e) => {
+                                  // Explicitly stop propagation to prevent bubbling
+                                  e.preventDefault();
                                   e.stopPropagation();
                                   handleDeleteLog(log.id);
                                 }}
-                                className="text-slate-400 hover:text-red-500 transition-colors"
+                                className="text-slate-400 hover:text-red-500 transition-colors cursor-pointer z-10"
+                                title="Delete log"
                               >
                                 <Trash2 size={16} />
                               </button>
