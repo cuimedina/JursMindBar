@@ -1,10 +1,11 @@
 
-
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 import { knowledgeStore } from "./knowledgeStore";
 import { Subject } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Use import.meta.env for Vite environment variables
+const API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
+const genAI = new GoogleGenerativeAI(API_KEY);
 
 const CA_BAR_SYSTEM_INSTRUCTION = `
 You are a specialized Data Extraction and Analysis Engine for the California Bar Exam.
@@ -21,8 +22,8 @@ CRITICAL PROTOCOL:
  * Analyzes a student essay ONLY against the principles found in the uploaded Knowledge Base.
  */
 export const analyzeEssayClosedLoop = async (prompt: string, essay: string, subject: Subject) => {
-  const model = "gemini-2.5-flash"; 
-  
+  const model = "gemini-2.0-flash-exp";
+
   // 1. Get the "Truth" from the Knowledge Store
   const context = knowledgeStore.getFullContextText(subject);
 
@@ -30,9 +31,27 @@ export const analyzeEssayClosedLoop = async (prompt: string, essay: string, subj
     throw new Error("No uploaded essays found for this subject. Please upload Model Answers to the Knowledge Base first.");
   }
 
-  const response = await ai.models.generateContent({
+  const modelInstance = genAI.getGenerativeModel({
     model,
-    contents: `
+    systemInstruction: CA_BAR_SYSTEM_INSTRUCTION,
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: SchemaType.OBJECT,
+        properties: {
+          score: { type: SchemaType.INTEGER },
+          feedbackSummary: { type: SchemaType.STRING },
+          missedIssues: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+          strengths: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+          weaknesses: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+          caDistinctionsNote: { type: SchemaType.STRING, description: "Mention if the student followed CA distinctions found in the context" }
+        },
+        required: ["score", "feedbackSummary", "missedIssues", "strengths"]
+      }
+    }
+  });
+
+  const response = await modelInstance.generateContent(`
       CONTEXT DOCUMENTS (Official California Model Answers):
       """
       ${context}
@@ -48,38 +67,37 @@ export const analyzeEssayClosedLoop = async (prompt: string, essay: string, subj
       2. Critique the rule statements. Are they consistent with the rules defined in the Context Documents?
       3. If the Context Documents mention a specific California distinction (e.g. Prop 8, CEC 1240), check if the student used it.
       4. Provide a predicted score (40-100) based on how closely the student mimics the style of the Context Documents.
-    `,
-    config: {
-      systemInstruction: CA_BAR_SYSTEM_INSTRUCTION,
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          score: { type: Type.INTEGER },
-          feedbackSummary: { type: Type.STRING },
-          missedIssues: { type: Type.ARRAY, items: { type: Type.STRING } },
-          strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
-          weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } },
-          caDistinctionsNote: { type: Type.STRING, description: "Mention if the student followed CA distinctions found in the context" }
-        },
-        required: ["score", "feedbackSummary", "missedIssues", "strengths"]
-      }
-    }
-  });
+    `);
 
-  return JSON.parse(response.text || "{}");
+  return JSON.parse(response.response.text() || "{}");
 };
 
 /**
  * Extracts a rule formula strictly from the uploaded text.
  */
 export const extractRuleFromContext = async (term: string) => {
-  const model = "gemini-2.5-flash";
+  const model = "gemini-2.0-flash-exp";
   const context = knowledgeStore.getFullContextText(); // Search all docs
 
-  const response = await ai.models.generateContent({
+  const modelInstance = genAI.getGenerativeModel({
     model,
-    contents: `
+    systemInstruction: CA_BAR_SYSTEM_INSTRUCTION,
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: SchemaType.OBJECT,
+        properties: {
+          found: { type: SchemaType.BOOLEAN },
+          ruleStatement: { type: SchemaType.STRING },
+          sourceDocTitle: { type: SchemaType.STRING, description: "The Exam Year/Question title where this rule was found" },
+          confidence: { type: SchemaType.NUMBER }
+        },
+        required: ["found"]
+      }
+    }
+  });
+
+  const response = await modelInstance.generateContent(`
       CONTEXT DOCUMENTS:
       """
       ${context}
@@ -93,38 +111,41 @@ export const extractRuleFromContext = async (term: string) => {
       3. Identify which specific Document Title the rule came from (e.g. "July 2012 Question 2").
       4. If the term is not defined in the text, return "found": false.
       5. Do NOT generate a rule from general knowledge.
-    `,
-    config: {
-      systemInstruction: CA_BAR_SYSTEM_INSTRUCTION,
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          found: { type: Type.BOOLEAN },
-          ruleStatement: { type: Type.STRING },
-          sourceDocTitle: { type: Type.STRING, description: "The Exam Year/Question title where this rule was found" },
-          confidence: { type: Type.NUMBER }
-        },
-        required: ["found"]
-      }
-    }
-  });
+    `);
 
-  return JSON.parse(response.text || "{}");
+  return JSON.parse(response.response.text() || "{}");
 };
 
 /**
  * Scans the uploaded documents to find recurring patterns.
  */
 export const identifyPatternsInKnowledgeBase = async (subject: Subject) => {
-  const model = "gemini-2.5-flash";
+  const model = "gemini-2.0-flash-exp";
   const context = knowledgeStore.getFullContextText(subject);
 
   if (!context) return [];
 
-  const response = await ai.models.generateContent({
+  const modelInstance = genAI.getGenerativeModel({
     model,
-    contents: `
+    systemInstruction: "You are a Pattern Recognition Engine. Analyze the dataset provided.",
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: SchemaType.ARRAY,
+        items: {
+          type: SchemaType.OBJECT,
+          properties: {
+            name: { type: SchemaType.STRING },
+            frequency: { type: SchemaType.INTEGER, description: "Estimated percentage of essays this pattern appears in within the dataset" },
+            description: { type: SchemaType.STRING },
+            relatedEssays: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING }, description: "Titles of documents where this was found" }
+          }
+        }
+      }
+    }
+  });
+
+  const response = await modelInstance.generateContent(`
       CONTEXT DOCUMENTS (Model Answers for ${subject}):
       """
       ${context}
@@ -133,69 +154,53 @@ export const identifyPatternsInKnowledgeBase = async (subject: Subject) => {
       TASK:
       Analyze these documents as a set. Identify recurring fact patterns, organizational structures, or rule clusters that appear multiple times.
       For example: "In Torts essays, Negligence is almost always paired with a Vicarious Liability issue."
-    `,
-    config: {
-      systemInstruction: "You are a Pattern Recognition Engine. Analyze the dataset provided.",
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            name: { type: Type.STRING },
-            frequency: { type: Type.INTEGER, description: "Estimated percentage of essays this pattern appears in within the dataset" },
-            description: { type: Type.STRING },
-            relatedEssays: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Titles of documents where this was found" }
-          }
-        }
-      }
-    }
-  });
+    `);
 
-  return JSON.parse(response.text || "[]");
+  return JSON.parse(response.response.text() || "[]");
 };
 
 /**
  * Analyzes sub-topic frequency within a subject from the Knowledge Base.
  */
 export const analyzeSubjectSubtopics = async (subject: Subject) => {
-  const model = "gemini-2.5-flash";
+  const model = "gemini-2.0-flash-exp";
   const context = knowledgeStore.getFullContextText(subject);
 
   if (!context) return [];
 
-  const response = await ai.models.generateContent({
+  const modelInstance = genAI.getGenerativeModel({
     model,
-    contents: `
-      CONTEXT DOCUMENTS (Model Answers for ${subject}):
-      """
-      ${context}
-      """
-
-      TASK:
-      Analyze the provided documents for ${subject}. 
-      Identify the major legal sub-issues (e.g. for Contracts: Formation, Breach, Remedies) that appear in these essays.
-      Count how many essays contain each sub-issue.
-    `,
-    config: {
-      systemInstruction: "You are a Data Extraction Engine. Extract subtopic frequencies.",
+    systemInstruction: "You are a Data Extraction Engine. Extract subtopic frequencies.",
+    generationConfig: {
       responseMimeType: "application/json",
       responseSchema: {
-        type: Type.ARRAY,
+        type: SchemaType.ARRAY,
         items: {
-          type: Type.OBJECT,
+          type: SchemaType.OBJECT,
           properties: {
-            subtopic: { type: Type.STRING },
-            count: { type: Type.INTEGER, description: "Number of essays containing this issue" },
-            percentage: { type: Type.NUMBER, description: "Percentage of total essays for this subject" },
-            relatedDocs: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Titles of essays containing this issue" }
+            subtopic: { type: SchemaType.STRING },
+            count: { type: SchemaType.INTEGER, description: "Number of essays containing this issue" },
+            percentage: { type: SchemaType.NUMBER, description: "Percentage of total essays for this subject" },
+            relatedDocs: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING }, description: "Titles of essays containing this issue" }
           }
         }
       }
     }
   });
 
-  return JSON.parse(response.text || "[]");
+  const response = await modelInstance.generateContent(`
+      CONTEXT DOCUMENTS (Model Answers for ${subject}):
+      """
+      ${context}
+      """
+
+      TASK:
+      Analyze the provided documents for ${subject}.
+      Identify the major legal sub-issues (e.g. for Contracts: Formation, Breach, Remedies) that appear in these essays.
+      Count how many essays contain each sub-issue.
+    `);
+
+  return JSON.parse(response.response.text() || "[]");
 };
 
 /**
@@ -208,14 +213,14 @@ export const analyzeMBEQuestionMultimodal = async (
   imageBase64?: string,
   mimeType: string = 'image/png'
 ) => {
-  const model = "gemini-2.5-flash"; // Supports vision
-  
+  const model = "gemini-2.0-flash-exp"; // Supports vision
+
   const parts: any[] = [];
-  
+
   if (text) {
     parts.push({ text: `Question Text: ${text}` });
   }
-  
+
   if (imageBase64) {
     // Strip prefix if present (e.g. data:image/png;base64,...)
     const cleanBase64 = imageBase64.split(',')[1] || imageBase64;
@@ -239,22 +244,23 @@ export const analyzeMBEQuestionMultimodal = async (
 
   parts.push({ text: prompt });
 
-  const response = await ai.models.generateContent({
+  const modelInstance = genAI.getGenerativeModel({
     model,
-    contents: { parts },
-    config: {
+    generationConfig: {
       responseMimeType: "application/json",
       responseSchema: {
-        type: Type.OBJECT,
+        type: SchemaType.OBJECT,
         properties: {
-          extractedText: { type: Type.STRING, description: "The transcribed text of the question" },
-          patternType: { type: Type.STRING, description: "e.g. 'Character Evidence Exception'" },
-          distractorType: { type: Type.STRING, description: "e.g. 'Right result, wrong reason'" },
-          analysis: { type: Type.STRING, description: "Brief explanation of the legal logic" }
+          extractedText: { type: SchemaType.STRING, description: "The transcribed text of the question" },
+          patternType: { type: SchemaType.STRING, description: "e.g. 'Character Evidence Exception'" },
+          distractorType: { type: SchemaType.STRING, description: "e.g. 'Right result, wrong reason'" },
+          analysis: { type: SchemaType.STRING, description: "Brief explanation of the legal logic" }
         }
       }
     }
   });
 
-  return JSON.parse(response.text || "{}");
+  const response = await modelInstance.generateContent(parts);
+
+  return JSON.parse(response.response.text() || "{}");
 };
